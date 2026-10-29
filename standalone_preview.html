@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ALTHUS by DATALIS — Gestão & PDV Comércio Varejista (MVP v1.1)</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <!-- React & ReactDOM UMD -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel Standalone para JSX no browser -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 antialiased min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    // Motores Matemáticos da Especificação v1.1
+    function calcularPrecificacao(params) {
+      const { custoUnitario, despesasVariaveisPercentual: dv, despesasFixasPercentual: df, margemLucroDesejadaPercentual: ml, arredondamento } = params;
+      const soma = dv + df + ml;
+      if (soma >= 100) throw new Error("A soma dos percentuais atinge ou supera 100%.");
+      const divisor = 1 - (soma / 100);
+      const precoBruto = Math.round((custoUnitario / divisor) * 100) / 100;
+      
+      let precoFinal = precoBruto;
+      if (arredondamento === 'TERMINADO_90') {
+        const inteiro = Math.floor(precoBruto);
+        const dec = precoBruto - inteiro;
+        precoFinal = dec <= 0.9001 ? inteiro + 0.90 : inteiro + 1.90;
+      } else if (arredondamento === 'PROXIMO_005') {
+        precoFinal = Math.ceil(precoBruto * 20) / 20;
+      }
+
+      const precoEquilibrio = Math.round((custoUnitario / (1 - (dv + df) / 100)) * 100) / 100;
+      const precoContribuicao = Math.round((custoUnitario / (1 - dv / 100)) * 100) / 100;
+      const descMax = Math.round((1 - precoContribuicao / precoFinal) * 1000) / 10;
+
+      return {
+        precoSugeridoBruto: precoBruto,
+        precoSugeridoFinal: Math.round(precoFinal * 100) / 100,
+        precoEquilibrio,
+        precoContribuicao,
+        markupDivisor: Math.round(divisor * 1000) / 1000,
+        descontoMaximo: descMax
+      };
+    }
+
+    function AlthusApp() {
+      const [role, setRole] = useState('DONO');
+      const [activeTab, setActiveTab] = useState('pdv');
+      const [isOnline, setIsOnline] = useState(true);
+      const [offlineQueue, setOfflineQueue] = useState([]);
+
+      // Produtos
+      const [produtos, setProdutos] = useState([
+        {
+          id: 'p1',
+          nome: 'Camiseta Polo Básica',
+          categoria: 'Vestuário',
+          unidade: 'un',
+          custoUnitario: 35.00,
+          precoVenda: 79.90,
+          estoqueAtual: 42,
+          estoqueMinimo: 15,
+          possuiVariacoes: true,
+          variacoes: [
+            { id: 'v1', tamanho: 'M', cor: 'Azul', barcode: '78910001', estoque: 8, custo: 35.00, preco: 79.90 },
+            { id: 'v2', tamanho: 'G', cor: 'Preto', barcode: '78910002', estoque: 14, custo: 35.00, preco: 79.90 },
+            { id: 'v3', tamanho: 'P', cor: 'Branco', barcode: '78910003', estoque: 20, custo: 35.00, preco: 79.90 },
+          ]
+        },
+        {
+          id: 'p2',
+          nome: 'Arroz Nobre Tipo 1 - 5kg',
+          categoria: 'Mercearia',
+          barcode: '78920001',
+          unidade: 'un',
+          custoUnitario: 22.50,
+          precoVenda: 29.90,
+          estoqueAtual: 4, // Alerta: abaixo do mínimo
+          estoqueMinimo: 10,
+          possuiVariacoes: false
+        },
+        {
+          id: 'p3',
+          nome: 'Queijo Muçarela Granel',
+          categoria: 'Laticínios',
+          barcode: '78940001',
+          unidade: 'kg',
+          custoUnitario: 32.00,
+          precoVenda: 48.00,
+          estoqueAtual: 14.500,
+          estoqueMinimo: 5.000,
+          possuiVariacoes: false
+        }
+      ]);
+
+      // Vendas
+      const [vendas, setVendas] = useState([
+        {
+          id: 'v-101',
+          dataHora: new Date().toISOString(),
+          valorBruto: 159.80,
+          desconto: 9.90,
+          valorLiquido: 149.90,
+          formaPagamento: 'PIX',
+          itens: [{ nome: 'Camiseta Polo Básica (M/Azul)', qtd: 2, unit: 79.90, total: 149.90, custo: 35.00 }]
+        }
+      ]);
+
+      // Despesas
+      const [despesas, setDespesas] = useState([
+        { id: 'd1', desc: 'Aluguel Ponto Comercial', tipo: 'FIXA', valor: 2200.00, venc: '05/11/2026', status: 'PENDENTE' },
+        { id: 'd2', desc: 'Energia Elétrica', tipo: 'FIXA', valor: 680.00, venc: '10/11/2026', status: 'PENDENTE' },
+        { id: 'd3', desc: 'Taxas de Cartão', tipo: 'VARIAVEL', valor: 250.00, venc: '30/10/2026', status: 'PAGA' }
+      ]);
+
+      // Fiado / Contas a Receber (Onda 3 - F-18)
+      const [titulosReceber, setTitulosReceber] = useState([
+        { id: 'tr1', cliente: 'Mariano Alencar', tel: '(67) 99222-3344', total: 180.00, saldo: 120.00, venc: '24/10/2026', status: 'VENCIDO' }
+      ]);
+
+      // Estado do PDV Nativo (Onda 2 - F-05)
+      const [carrinho, setCarrinho] = useState([]);
+      const [buscaPdv, setBuscaPdv] = useState('');
+      const [formaPdv, setFormaPdv] = useState('DINHEIRO');
+      const [clienteFiadoNome, setClienteFiadoNome] = useState('');
+      const [descontoPdv, setDescontoPdv] = useState(0);
+      const [comprovante, setComprovante] = useState(null);
+
+      // Calculadora de Precificação (F-29)
+      const [calcParams, setCalcParams] = useState({
+        custoUnitario: 60.00,
+        despesasVariaveisPercentual: 7.0,
+        despesasFixasPercentual: 20.0,
+        margemLucroDesejadaPercentual: 10.0,
+        arredondamento: 'TERMINADO_90'
+      });
+
+      const resCalc = useMemo(() => {
+        try {
+          return { data: calcularPrecificacao(calcParams), erro: null };
+        } catch (e) {
+          return { data: null, erro: e.message };
+        }
+      }, [calcParams]);
+
+      // Ações do PDV
+      const adicionarItem = (prod, varItem) => {
+        let preco = varItem ? varItem.preco : prod.precoVenda;
+        let qtd = 1;
+
+        if (prod.unidade === 'kg') {
+          const pesoStr = prompt(`Venda por Peso (Granel):\nInforme o peso em kg para "${prod.nome}" (ex: 0.350):`, '0.350');
+          if (!pesoStr) return;
+          qtd = parseFloat(pesoStr.replace(',', '.')) || 0;
+          if (qtd <= 0) { alert('Peso inválido!'); return; }
+        }
+
+        setCarrinho(prev => {
+          const key = prod.id + (varItem ? `-${varItem.id}` : '');
+          const existe = prev.find(i => i.key === key);
+          if (existe && prod.unidade === 'un') {
+            return prev.map(i => i.key === key ? { ...i, qtd: i.qtd + 1 } : i);
+          }
+          return [...prev, {
+            key,
+            prodId: prod.id,
+            nome: prod.nome + (varItem ? ` (${varItem.tamanho}/${varItem.cor})` : ''),
+            unidade: prod.unidade,
+            custo: varItem ? varItem.custo : prod.custoUnitario,
+            preco,
+            qtd
+          }];
+        });
+      };
+
+      const subtotalPdv = carrinho.reduce((a, b) => a + (b.qtd * b.preco), 0);
+      const totalPdv = Math.max(0, subtotalPdv - descontoPdv);
+
+      const finalizarVenda = () => {
+        if (carrinho.length === 0) return alert('Carrinho vazio.');
+        if (formaPdv === 'A_PRAZO' && !clienteFiadoNome) {
+          return alert('Venda a prazo (fiado) exige o nome do cliente!');
+        }
+
+        if (!isOnline) {
+          const novaVendaOff = {
+            id: `off-${Date.now()}`,
+            dataHora: new Date().toISOString(),
+            valorBruto: subtotalPdv,
+            desconto: descontoPdv,
+            valorLiquido: totalPdv,
+            formaPagamento: formaPdv,
+            itens: carrinho
+          };
+          setOfflineQueue(prev => [...prev, novaVendaOff]);
+          setCarrinho([]);
+          setDescontoPdv(0);
+          setClienteFiadoNome('');
+          alert('Venda gravada localmente na Fila Offline (F-27). Será transmitida quando a internet voltar.');
+          return;
+        }
+
+        const novaVenda = {
+          id: `v-${Date.now().toString().slice(-6)}`,
+          dataHora: new Date().toISOString(),
+          valorBruto: subtotalPdv,
+          desconto: descontoPdv,
+          valorLiquido: totalPdv,
+          formaPagamento: formaPdv,
+          itens: carrinho
+        };
+
+        if (formaPdv === 'A_PRAZO') {
+          setTitulosReceber(prev => [
+            { id: `tr-${Date.now()}`, cliente: clienteFiadoNome, tel: '', total: totalPdv, saldo: totalPdv, venc: '30 dias', status: 'ABERTO' },
+            ...prev
+          ]);
+        }
+
+        setVendas(prev => [novaVenda, ...prev]);
+        setComprovante(novaVenda);
+        setCarrinho([]);
+        setDescontoPdv(0);
+        setClienteFiadoNome('');
+      };
+
+      return (
+        <div className="flex flex-col min-h-screen">
+          {/* HEADER */}
+          <header className="bg-white border-b border-slate-200 px-6 py-3.5 flex items-center justify-between sticky top-0 z-30 shadow-sm">
+            <div className="flex items-center space-x-3">
+              <div className="bg-emerald-700 text-white font-extrabold px-3 py-1.5 rounded-lg text-lg tracking-wider">
+                ALTHUS
+              </div>
+              <div>
+                <div className="flex items-center space-x-2">
+                  <span className="font-bold text-slate-900 text-sm">Mercado & Moda Althus</span>
+                  <span className="text-[11px] bg-emerald-100 text-emerald-800 font-semibold px-2 py-0.5 rounded-full">
+                    MVP v1.1
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500">Multi-Tenant Seguro · Supabase RLS · PII Criptografada</p>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-3">
+              {/* Botão de Conexão Offline F-27 */}
+              <button
+                onClick={() => {
+                  if (!isOnline && offlineQueue.length > 0) {
+                    setVendas(prev => [...offlineQueue, ...prev]);
+                    alert(`${offlineQueue.length} venda(s) offline sincronizada(s) com o servidor com sucesso!`);
+                    setOfflineQueue([]);
+                  }
+                  setIsOnline(!isOnline);
+                }}
+                className={`text-xs px-3 py-1.5 rounded-lg font-bold border transition ${
+                  isOnline ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-red-50 text-red-700 border-red-300 animate-pulse'
+                }`}
+              >
+                {isOnline ? '📶 Conectado (Online)' : `📡 Modo Offline (${offlineQueue.length} na fila)`}
+              </button>
+
+              {/* Switcher Dono vs Operador */}
+              <div className="bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs font-medium flex space-x-1">
+                <button
+                  onClick={() => setRole('DONO')}
+                  className={`px-3 py-1 rounded-md transition ${role === 'DONO' ? 'bg-emerald-700 text-white font-bold' : 'text-slate-600'}`}
+                >
+                  👑 Dono
+                </button>
+                <button
+                  onClick={() => {
+                    setRole('OPERADOR');
+                    if (activeTab === 'dashboard' || activeTab === 'despesas' || activeTab === 'precificacao' || activeTab === 'devolucoes' || activeTab === 'nfe') {
+                      setActiveTab('pdv');
+                    }
+                  }}
+                  className={`px-3 py-1 rounded-md transition ${role === 'OPERADOR' ? 'bg-slate-800 text-white font-bold' : 'text-slate-600'}`}
+                >
+                  👤 Operador
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {/* TABS DE NAVEGAÇÃO */}
+          <nav className="bg-white border-b border-slate-200 px-6 flex space-x-2 overflow-x-auto text-xs font-bold">
+            {role === 'DONO' && (
+              <button onClick={() => setActiveTab('dashboard')} className={`py-3 px-3 border-b-2 whitespace-nowrap ${activeTab === 'dashboard' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-500'}`}>
+                📊 Painel & Alertas
+              </button>
+            )}
+            <button onClick={() => setActiveTab('pdv')} className={`py-3 px-3 border-b-2 whitespace-nowrap ${activeTab === 'pdv' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-500'}`}>
+              🛒 PDV Nativo (<60s)
+            </button>
+            <button onClick={() => setActiveTab('produtos')} className={`py-3 px-3 border-b-2 whitespace-nowrap ${activeTab === 'produtos' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-500'}`}>
+              🏷️ Produtos & Grade
+            </button>
+            <button onClick={() => setActiveTab('dadosEmissao')} className={`py-3 px-3 border-b-2 whitespace-nowrap ${activeTab === 'dadosEmissao' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-500'}`}>
+              📑 Dados para Emissão
+            </button>
+            {role === 'DONO' && (
+              <button onClick={() => setActiveTab('devolucoes')} className={`py-3 px-3 border-b-2 whitespace-nowrap ${activeTab === 'devolucoes' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-500'}`}>
+                🔄 Trocas & Devoluções
+              </button>
+            )}
+            <button onClick={() => setActiveTab('caixa')} className={`py-3 px-3 border-b-2 whitespace-nowrap ${activeTab === 'caixa' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-500'}`}>
+              💼 Fechamento de Caixa
+            </button>
+            {role === 'DONO' && (
+              <>
+                <button onClick={() => setActiveTab('nfe')} className={`py-3 px-3 border-b-2 whitespace-nowrap ${activeTab === 'nfe' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-500'}`}>
+                  📦 Entrada XML NF-e
+                </button>
+                <button onClick={() => setActiveTab('contasReceber')} className={`py-3 px-3 border-b-2 whitespace-nowrap ${activeTab === 'contasReceber' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-500'}`}>
+                  📒 Fiado & Receber
+                </button>
+                <button onClick={() => setActiveTab('despesas')} className={`py-3 px-3 border-b-2 whitespace-nowrap ${activeTab === 'despesas' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-500'}`}>
+                  💰 Despesas
+                </button>
+                <button onClick={() => setActiveTab('precificacao')} className={`py-3 px-3 border-b-2 whitespace-nowrap ${activeTab === 'precificacao' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-500'}`}>
+                  🧮 Calculadora Preço
+                </button>
+              </>
+            )}
+          </nav>
+
+          {/* ÁREA PRINCIPAL */}
+          <main className="flex-1 p-6 max-w-7xl mx-auto w-full">
+            {/* ============================================================== */}
+            {/* ABA: PDV NATIVO (ONDA 2 - F-05)                                */}
+            {/* ============================================================== */}
+            {activeTab === 'pdv' && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* CATÁLOGO RÁPIDO */}
+                <div className="lg:col-span-2 space-y-4">
+                  <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm flex items-center space-x-2">
+                    <span className="text-slate-400">🔍</span>
+                    <input
+                      type="text"
+                      placeholder="Pesquisar por nome ou código de barras..."
+                      value={buscaPdv}
+                      onChange={e => setBuscaPdv(e.target.value)}
+                      className="w-full text-sm outline-none"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {produtos
+                      .filter(p => p.nome.toLowerCase().includes(buscaPdv.toLowerCase()))
+                      .map(p => (
+                        <div key={p.id} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                          <div>
+                            <div className="flex justify-between items-start">
+                              <h4 className="font-bold text-slate-900 text-sm">{p.nome}</h4>
+                              <span className="text-[10px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-mono font-semibold">
+                                {p.unidade}
+                              </span>
+                            </div>
+                            <div className="mt-2 text-xl font-extrabold text-emerald-800 font-mono">
+                              R$ {p.precoVenda.toFixed(2)}
+                              {p.unidade === 'kg' && <span className="text-xs font-normal text-slate-500"> / kg</span>}
+                            </div>
+                          </div>
+
+                          <div className="mt-3 pt-3 border-t border-slate-100">
+                            {p.possuiVariacoes ? (
+                              <div className="space-y-1.5">
+                                <span className="text-[11px] text-slate-500 font-semibold block">Escolha Tamanho & Cor:</span>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {p.variacoes.map(v => (
+                                    <button
+                                      key={v.id}
+                                      onClick={() => adicionarItem(p, v)}
+                                      className="px-2.5 py-1 bg-slate-100 hover:bg-emerald-100 text-slate-800 text-xs font-bold rounded border border-slate-200 transition"
+                                    >
+                                      {v.tamanho} - {v.cor}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => adicionarItem(p)}
+                                className="w-full py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold transition"
+                              >
+                                + Adicionar ao Caixa
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+
+                {/* CUPOM / CARRINHO DO CAIXA */}
+                <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                  <div>
+                    <div className="flex justify-between items-center pb-3 border-b border-slate-100 mb-3">
+                      <h3 className="font-extrabold text-slate-900 text-base">Cupom de Venda</h3>
+                      <button onClick={() => setCarrinho([])} className="text-xs text-red-600 hover:underline">Limpar</button>
+                    </div>
+
+                    {carrinho.length === 0 ? (
+                      <div className="text-center py-12 text-slate-400 text-xs">Caixa livre. Nenhum item adicionado.</div>
+                    ) : (
+                      <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                        {carrinho.map((item, idx) => (
+                          <div key={idx} className="p-2 bg-slate-50 rounded-lg text-xs flex justify-between items-center">
+                            <div>
+                              <div className="font-bold text-slate-800">{item.nome}</div>
+                              <div className="text-slate-500 font-mono">{item.qtd} {item.unidade} × R$ {item.preco.toFixed(2)}</div>
+                            </div>
+                            <div className="text-right">
+                              <div className="font-bold font-mono text-slate-900">R$ {(item.qtd * item.preco).toFixed(2)}</div>
+                              <button onClick={() => setCarrinho(prev => prev.filter((_, i) => i !== idx))} className="text-red-500 hover:underline text-[10px]">remover</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-4 pt-4 border-t border-slate-200 space-y-3">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="font-medium text-slate-600">Desconto (R$):</span>
+                      <input
+                        type="number"
+                        value={descontoPdv}
+                        onChange={e => setDescontoPdv(parseFloat(e.target.value) || 0)}
+                        className="w-20 p-1 border rounded text-right font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-600 block mb-1">Forma de Pagamento (RN-02)</label>
+                      <select
+                        value={formaPdv}
+                        onChange={e => setFormaPdv(e.target.value)}
+                        className="w-full p-2 border border-slate-300 rounded-lg text-xs bg-white font-medium"
+                      >
+                        <option value="DINHEIRO">💵 Dinheiro</option>
+                        <option value="PIX">⚡ PIX</option>
+                        <option value="DEBITO">💳 Débito</option>
+                        <option value="CREDITO">💳 Crédito</option>
+                        <option value="A_PRAZO">📒 A Prazo (Fiado - F-18)</option>
+                      </select>
+                    </div>
+
+                    {formaPdv === 'A_PRAZO' && (
+                      <div className="p-2.5 bg-amber-50 rounded-lg border border-amber-200 space-y-1.5">
+                        <span className="text-[11px] font-bold text-amber-900 block">Identificação do Cliente:</span>
+                        <input
+                          type="text"
+                          placeholder="Nome completo do cliente..."
+                          value={clienteFiadoNome}
+                          onChange={e => setClienteFiadoNome(e.target.value)}
+                          className="w-full p-1.5 border rounded text-xs bg-white"
+                        />
+                      </div>
+                    )}
+
+                    <div className="flex justify-between items-baseline pt-2">
+                      <span className="text-xs font-bold text-slate-500 uppercase">Total Final</span>
+                      <span className="text-2xl font-black text-emerald-800 font-mono">
+                        R$ {totalPdv.toFixed(2)}
+                      </span>
+                    </div>
+
+                    <button
+                      onClick={finalizarVenda}
+                      className="w-full py-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-sm font-bold shadow-md transition"
+                    >
+                      ✓ Confirmar Venda
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* MODAL COMPROVANTE */}
+            {comprovante && (
+              <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4 border border-slate-200">
+                  <div className="text-center">
+                    <span className="text-4xl">🎉</span>
+                    <h3 className="font-bold text-slate-900 text-lg mt-1">Venda Concluída!</h3>
+                    <p className="text-xs text-slate-500">Comprovante Gerencial de Venda</p>
+                  </div>
+                  <div className="bg-slate-50 p-4 rounded-xl border text-xs font-mono space-y-1.5">
+                    <div className="flex justify-between border-b pb-1">
+                      <span>Venda #{comprovante.id}</span>
+                      <span>{new Date(comprovante.dataHora).toLocaleTimeString()}</span>
+                    </div>
+                    {comprovante.itens.map((it, idx) => (
+                      <div key={idx} className="flex justify-between">
+                        <span>{it.qtd}x {it.nome}</span>
+                        <span>R$ {(it.qtd * it.preco).toFixed(2)}</span>
+                      </div>
+                    ))}
+                    <div className="border-t pt-1 flex justify-between font-bold text-slate-900">
+                      <span>TOTAL PAGO ({comprovante.formaPagamento})</span>
+                      <span>R$ {comprovante.valorLiquido.toFixed(2)}</span>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-400 text-center">Documento não fiscal para conferência gerencial.</p>
+                  <button onClick={() => setComprovante(null)} className="w-full py-2 bg-slate-800 text-white rounded-lg text-xs font-bold">
+                    Fechar
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ============================================================== */}
+            {/* ABA: PAINEL & ALERTAS (F-07, F-08)                             */}
+            {/* ============================================================== */}
+            {role === 'DONO' && activeTab === 'dashboard' && (
+              <div className="space-y-6">
+                {/* ALERTA A1 & A8 */}
+                <div className="bg-white border border-amber-200 rounded-xl p-5 shadow-sm space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-bold text-amber-900 text-sm flex items-center space-x-2">
+                      <span>⚠️</span>
+                      <span>Alertas por Regras Matemáticas Ativos</span>
+                    </h3>
+                    <span className="text-xs text-slate-400 font-mono">Sem IA · 100% Determinístico</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-900">
+                      <strong>Regra A1 (Estoque Mínimo):</strong> 1 produto ("Arroz Nobre 5kg") está com 4 un, abaixo do mínimo (10 un).
+                    </div>
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900">
+                      <strong>Regra A5 (Vencimentos da Semana):</strong> Vencem R$ 2.880,00 nos próximos 7 dias contra R$ 1.500,00 de saldo inicial.
+                    </div>
+                  </div>
+                </div>
+
+                {/* CARDS */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <span className="text-xs text-slate-500 font-bold uppercase">Faturamento Mês</span>
+                    <div className="text-2xl font-black text-slate-900 mt-1 font-mono">
+                      R$ {vendas.reduce((a, b) => a + b.valorLiquido, 0).toFixed(2)}
+                    </div>
+                    <span className="text-[11px] text-slate-400">{vendas.length} venda(s) registrada(s)</span>
+                  </div>
+                  <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <span className="text-xs text-slate-500 font-bold uppercase">CMV Real (Custo)</span>
+                    <div className="text-2xl font-black text-slate-900 mt-1 font-mono">R$ 70,00</div>
+                    <span className="text-[11px] text-slate-400">Margem Bruta: 53.3%</span>
+                  </div>
+                  <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <span className="text-xs text-slate-500 font-bold uppercase">Resultado Gerencial</span>
+                    <div className="text-2xl font-black text-emerald-700 mt-1 font-mono">R$ 79,90</div>
+                    <span className="text-[11px] text-slate-400">Antes da retirada do dono</span>
+                  </div>
+                  <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <span className="text-xs text-slate-500 font-bold uppercase">Ponto de Equilíbrio</span>
+                    <div className="text-2xl font-black text-slate-900 mt-1 font-mono">R$ 5.407,50</div>
+                    <span className="text-[11px] text-slate-400">Meta diária: R$ 207,98 / dia</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ============================================================== */}
+            {/* ABA: DADOS PARA EMISSÃO (F-09)                                 */}
+            {/* ============================================================== */}
+            {activeTab === 'dadosEmissao' && (
+              <div className="space-y-4 max-w-4xl mx-auto">
+                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <h3 className="font-bold text-slate-900 text-lg">Dados para Emissão de Nota Fiscal</h3>
+                      <p className="text-xs text-slate-500">Copie os dados das vendas do PDV nativo para colar no seu emissor fiscal externo.</p>
+                    </div>
+                    <button
+                      onClick={() => alert('Arquivo CSV formatado no padrão brasileiro (; e UTF-8) exportado com sucesso!')}
+                      className="px-3.5 py-2 bg-slate-800 text-white rounded-lg text-xs font-bold hover:bg-slate-700"
+                    >
+                      Exportar CSV
+                    </button>
+                  </div>
+
+                  <div className="p-3 bg-blue-50 border border-blue-200 text-blue-900 rounded-lg text-xs font-semibold">
+                    ⚠️ Relatório gerencial. Não é documento fiscal e não substitui a nota fiscal.
+                  </div>
+
+                  <div className="border rounded-xl overflow-hidden">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 font-bold text-slate-600 border-b">
+                        <tr>
+                          <th className="py-2.5 px-4">Venda</th>
+                          <th className="py-2.5 px-4">Itens</th>
+                          <th className="py-2.5 px-4 text-right">Total</th>
+                          <th className="py-2.5 px-4 text-center">Ação</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {vendas.map(v => (
+                          <tr key={v.id}>
+                            <td className="py-3 px-4 font-mono font-bold">{v.id}</td>
+                            <td className="py-3 px-4">
+                              {v.itens.map((it, idx) => (
+                                <div key={idx}>{it.qtd}x {it.nome}</div>
+                              ))}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono font-bold">R$ {v.valorLiquido.toFixed(2)}</td>
+                            <td className="py-3 px-4 text-center">
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(`Venda ${v.id} - Total R$ ${v.valorLiquido}`);
+                                  alert('Dados da venda copiados para a área de transferência!');
+                                }}
+                                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded font-semibold text-slate-700"
+                              >
+                                Copiar
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ============================================================== */}
+            {/* ABA: CALCULADORA DE PRECIFICAÇÃO (F-29 / Seção 5.12)           */}
+            {/* ============================================================== */}
+            {role === 'DONO' && activeTab === 'precificacao' && (
+              <div className="space-y-6 max-w-4xl mx-auto">
+                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
+                  <div>
+                    <h3 className="font-extrabold text-slate-900 text-lg">Calculadora de Precificação por Markup Divisor</h3>
+                    <p className="text-xs text-slate-500">Técnica "Preço por Dentro": as margens e impostos incidem sobre o preço final de venda.</p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-3 text-xs">
+                      <div>
+                        <label className="font-bold text-slate-700 block mb-1">Custo Unitário de Reposição (R$)</label>
+                        <input
+                          type="number"
+                          value={calcParams.custoUnitario}
+                          onChange={e => setCalcParams({ ...calcParams, custoUnitario: parseFloat(e.target.value) || 0 })}
+                          className="w-full p-2 border rounded-lg font-mono font-bold text-sm"
+                        />
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">DV% (Variáveis)</label>
+                          <input
+                            type="number"
+                            value={calcParams.despesasVariaveisPercentual}
+                            onChange={e => setCalcParams({ ...calcParams, despesasVariaveisPercentual: parseFloat(e.target.value) || 0 })}
+                            className="w-full p-2 border rounded-lg font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">DF% (Fixas)</label>
+                          <input
+                            type="number"
+                            value={calcParams.despesasFixasPercentual}
+                            onChange={e => setCalcParams({ ...calcParams, despesasFixasPercentual: parseFloat(e.target.value) || 0 })}
+                            className="w-full p-2 border rounded-lg font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">ML% (Lucro)</label>
+                          <input
+                            type="number"
+                            value={calcParams.margemLucroDesejadaPercentual}
+                            onChange={e => setCalcParams({ ...calcParams, margemLucroDesejadaPercentual: parseFloat(e.target.value) || 0 })}
+                            className="w-full p-2 border rounded-lg font-mono"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="font-bold text-slate-700 block mb-1">Arredondamento Comercial (RN-C4)</label>
+                        <select
+                          value={calcParams.arredondamento}
+                          onChange={e => setCalcParams({ ...calcParams, arredondamento: e.target.value })}
+                          className="w-full p-2 border rounded-lg bg-white"
+                        >
+                          <option value="TERMINADO_90">Terminando em ,90 (Ex: 95,24 ➔ 95,90)</option>
+                          <option value="PROXIMO_005">Múltiplo de R$ 0,05 (Ex: 95,24 ➔ 95,25)</option>
+                          <option value="NENHUM">Sem Arredondamento</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {resCalc.data && (
+                      <div className="bg-slate-50 p-5 rounded-xl border border-slate-200 flex flex-col justify-between space-y-3">
+                        <div>
+                          <span className="text-[11px] font-bold text-slate-500 uppercase">Preço de Venda Sugerido</span>
+                          <div className="text-3xl font-black text-emerald-800 font-mono mt-1">
+                            R$ {resCalc.data.precoSugeridoFinal.toFixed(2)}
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-1">
+                            Preço bruto: R$ {resCalc.data.precoSugeridoBruto.toFixed(2)} (Markup Divisor: {resCalc.data.markupDivisor})
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div className="p-2.5 bg-white rounded-lg border">
+                            <span className="text-[10px] text-slate-400 block">Preço Equilíbrio</span>
+                            <span className="font-bold font-mono">R$ {resCalc.data.precoEquilibrio.toFixed(2)}</span>
+                          </div>
+                          <div className="p-2.5 bg-white rounded-lg border">
+                            <span className="text-[10px] text-slate-400 block">Preço Contribuição</span>
+                            <span className="font-bold font-mono">R$ {resCalc.data.precoContribuicao.toFixed(2)}</span>
+                          </div>
+                        </div>
+
+                        <div className="p-2.5 bg-emerald-100/60 rounded-lg text-emerald-900 text-xs font-semibold">
+                          Desconto Máximo sem Prejuízo: {resCalc.data.descontoMaximo}%
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ============================================================== */}
+            {/* ABA: FIADO & CONTAS A RECEBER (ONDA 3 - F-18)                  */}
+            {/* ============================================================== */}
+            {role === 'DONO' && activeTab === 'contasReceber' && (
+              <div className="space-y-4 max-w-4xl mx-auto">
+                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                  <h3 className="font-bold text-slate-900 text-lg">Contas a Receber (Vendas a Prazo / Fiado)</h3>
+                  <div className="border rounded-xl overflow-hidden">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 text-slate-600 font-bold border-b">
+                        <tr>
+                          <th className="py-2.5 px-4">Cliente</th>
+                          <th className="py-2.5 px-4">Telefone</th>
+                          <th className="py-2.5 px-4 text-right">Saldo Devedor</th>
+                          <th className="py-2.5 px-4 text-center">Status</th>
+                          <th className="py-2.5 px-4 text-center">Ação</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {titulosReceber.map(t => (
+                          <tr key={t.id}>
+                            <td className="py-3 px-4 font-bold">{t.cliente}</td>
+                            <td className="py-3 px-4 text-slate-500">{t.tel || '—'}</td>
+                            <td className="py-3 px-4 text-right font-mono font-bold text-red-600">R$ {t.saldo.toFixed(2)}</td>
+                            <td className="py-3 px-4 text-center">
+                              <span className="px-2 py-0.5 rounded font-bold bg-red-100 text-red-800">{t.status}</span>
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <button
+                                onClick={() => {
+                                  const v = prompt('Valor a receber (R$):', t.saldo.toString());
+                                  if (v) {
+                                    alert(`Recebimento de R$ ${v} baixado e lançado no caixa de hoje!`);
+                                    setTitulosReceber(prev => prev.filter(item => item.id !== t.id));
+                                  }
+                                }}
+                                className="px-2.5 py-1 bg-emerald-700 text-white rounded font-bold hover:bg-emerald-800"
+                              >
+                                Baixar
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ============================================================== */}
+            {/* ABA: ENTRADA POR XML DE NF-E (ONDA 3 - F-16)                   */}
+            {/* ============================================================== */}
+            {role === 'DONO' && activeTab === 'nfe' && (
+              <div className="space-y-4 max-w-xl mx-auto text-center">
+                <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                  <span className="text-4xl">📦</span>
+                  <h3 className="font-bold text-slate-900 text-lg">Entrada de Estoque por XML de NF-e</h3>
+                  <p className="text-xs text-slate-500">Envie o arquivo XML da nota de compra para atualizar quantidades e custos de reposição (S5).</p>
+                  <button
+                    onClick={() => alert('XML simulado com sucesso: 2 itens atualizados no estoque e contas a pagar geradas!')}
+                    className="px-4 py-2 bg-purple-700 text-white rounded-lg text-xs font-bold hover:bg-purple-800"
+                  >
+                    Simular Envio de XML
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ============================================================== */}
+            {/* DEMAIS ABAS: PRODUTOS, TROCAS, CAIXA, DESPESAS                */}
+            {/* ============================================================== */}
+            {activeTab === 'produtos' && (
+              <div className="bg-white border rounded-xl overflow-hidden shadow-sm">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 font-bold text-slate-600 border-b">
+                    <tr>
+                      <th className="py-3 px-4">Produto</th>
+                      <th className="py-3 px-4">Categoria</th>
+                      <th className="py-3 px-4">Estoque</th>
+                      <th className="py-3 px-4 text-right">Preço Venda</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {produtos.map(p => (
+                      <tr key={p.id}>
+                        <td className="py-3 px-4 font-bold">{p.nome}</td>
+                        <td className="py-3 px-4 text-slate-500">{p.categoria}</td>
+                        <td className="py-3 px-4 font-bold font-mono">{p.estoqueAtual} {p.unidade}</td>
+                        <td className="py-3 px-4 text-right font-mono font-bold">R$ {p.precoVenda.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {activeTab === 'caixa' && (
+              <div className="bg-white p-6 rounded-xl border max-w-lg mx-auto space-y-4 text-center">
+                <h3 className="font-bold text-slate-900 text-base">Fechamento de Caixa do Dia (F-13)</h3>
+                <p className="text-xs text-slate-500">Conferência cega: informe o dinheiro em espécie na gaveta para apurar quebra ou sobra.</p>
+                <button
+                  onClick={() => alert('Fechamento de caixa registrado: R$ 149,90 em dinheiro e R$ 0,00 de diferença.')}
+                  className="px-4 py-2 bg-emerald-700 text-white rounded-lg text-xs font-bold"
+                >
+                  Confirmar Fechamento
+                </button>
+              </div>
+            )}
+
+            {role === 'DONO' && activeTab === 'devolucoes' && (
+              <div className="bg-white p-6 rounded-xl border max-w-lg mx-auto space-y-4 text-center">
+                <h3 className="font-bold text-slate-900 text-base">Trocas e Devoluções (F-28)</h3>
+                <p className="text-xs text-slate-500">Retorno automático de itens ao estoque e estorno de CMV.</p>
+                <button
+                  onClick={() => alert('Devolução registrada com sucesso!')}
+                  className="px-4 py-2 bg-red-600 text-white rounded-lg text-xs font-bold"
+                >
+                  Simular Devolução
+                </button>
+              </div>
+            )}
+
+            {role === 'DONO' && activeTab === 'despesas' && (
+              <div className="bg-white border rounded-xl overflow-hidden">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 font-bold border-b">
+                    <tr>
+                      <th className="py-3 px-4">Descrição</th>
+                      <th className="py-3 px-4">Tipo</th>
+                      <th className="py-3 px-4 text-right">Valor</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {despesas.map(d => (
+                      <tr key={d.id}>
+                        <td className="py-3 px-4 font-bold">{d.desc}</td>
+                        <td className="py-3 px-4">{d.tipo}</td>
+                        <td className="py-3 px-4 text-right font-mono font-bold">R$ {d.valor.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </main>
+
+          {/* RODAPÉ */}
+          <footer className="bg-white border-t border-slate-200 py-3 px-6 text-center text-[11px] text-slate-400">
+            ALTHUS by DATALIS · Sistema Operacional e de Gestão do Varejo · MVP v1.1
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<AlthusApp />);
+  </script>
+</body>
+</html>
