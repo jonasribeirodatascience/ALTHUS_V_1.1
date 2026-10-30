@@ -1,9 +1,26 @@
 /**
  * ALTHUS by DATALIS — Motor de Alertas por Regras Matemáticas (F-08 / Seção 5.11)
  * Regras A1 a A8, A10. Sem inteligência artificial opaca; puramente determinístico e auditável.
+ *
+ * Conformidade:
+ * - Regra integridade-e-validacao-de-dados-financeiros:
+ *   Valores financeiros nas mensagens de alerta usam Intl.NumberFormat pt-BR (R$ 1.250,00).
  */
 
 import { AlertaDTO, ProdutoDTO, RelatorioIndicadoresDTO } from '../types/index.js';
+
+/** Formata um valor monetário no padrão pt-BR: R$ 1.250,00 */
+function fmtBRL(valor: number): string {
+  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(valor);
+}
+
+/** Formata um percentual no padrão pt-BR: 32,3% */
+function fmtPct(valor: number, casas = 1): string {
+  return new Intl.NumberFormat('pt-BR', {
+    minimumFractionDigits: casas,
+    maximumFractionDigits: casas,
+  }).format(valor) + '%';
+}
 
 export interface DadosParaAvaliacaoAlertas {
   produtos: ProdutoDTO[];
@@ -57,12 +74,13 @@ export function avaliarAlertas(dados: DadosParaAvaliacaoAlertas): AlertaDTO[] {
   const saldoCaixa = indicadoresAtuais.saldoCaixaAtual;
 
   if (vencimentos7Dias > saldoCaixa) {
+    // Diferença calculada sem perda de precisão, arredondada para exibição
     const diferenca = Math.round((vencimentos7Dias - saldoCaixa) * 100) / 100;
     alertas.push({
       id: 'A5',
       nivel: 'CRITICO',
       titulo: 'Vencimentos Superam o Saldo de Caixa',
-      mensagem: `Vencem R$ ${vencimentos7Dias.toFixed(2)} nos próximos 7 dias e seu saldo atual de caixa é R$ ${saldoCaixa.toFixed(2)} (déficit de R$ ${diferenca.toFixed(2)}).`,
+      mensagem: `Vencem ${fmtBRL(vencimentos7Dias)} nos próximos 7 dias e seu saldo atual de caixa é ${fmtBRL(saldoCaixa)} (déficit de ${fmtBRL(diferenca)}).`,
       dadosMinimosPresentes: true,
       indicadorOrigem: 'F-06 Despesas e Vencimentos',
       valoresUsados: {
@@ -91,7 +109,10 @@ export function avaliarAlertas(dados: DadosParaAvaliacaoAlertas): AlertaDTO[] {
       indicadorOrigem: 'F-04 Produtos',
       valoresUsados: {
         quantidadeProdutos: produtosPrecoAbaixoCusto.length,
-        produtos: produtosPrecoAbaixoCusto.slice(0, 3).map((p) => `${p.nome} (Preço: R$${p.precoVenda} < Custo: R$${p.custoUnitario})`).join('; '),
+        produtos: produtosPrecoAbaixoCusto
+          .slice(0, 3)
+          .map((p) => `${p.nome} (Preço: ${fmtBRL(p.precoVenda)} < Custo: ${fmtBRL(p.custoUnitario)})`)
+          .join('; '),
       },
       dataHoraGeracao: agoraIso,
     });
@@ -113,7 +134,7 @@ export function avaliarAlertas(dados: DadosParaAvaliacaoAlertas): AlertaDTO[] {
         id: 'A3',
         nivel: 'ATENCAO',
         titulo: 'Faturamento Abaixo do Ponto de Equilíbrio Proporcional',
-        mensagem: `Até hoje você faturou R$ ${faturamentoAtual.toFixed(2)}; o esperado para o dia ${diasDecorridosMes}/${totalDiasMes} era R$ ${metaProporcional.toFixed(2)} para cobrir custos e despesas fixas.`,
+        mensagem: `Até hoje você faturou ${fmtBRL(faturamentoAtual)}; o esperado para o dia ${diasDecorridosMes}/${totalDiasMes} era ${fmtBRL(Math.round(metaProporcional * 100) / 100)} para cobrir custos e despesas fixas.`,
         dadosMinimosPresentes: true,
         indicadorOrigem: 'F-07 Ponto de Equilíbrio',
         valoresUsados: {
@@ -143,7 +164,7 @@ export function avaliarAlertas(dados: DadosParaAvaliacaoAlertas): AlertaDTO[] {
         id: 'A4',
         nivel: 'ATENCAO',
         titulo: 'Queda Relevante na Margem Bruta',
-        mensagem: `Sua margem bruta caiu de ${margemAnterior.toFixed(1)}% para ${margemAtual.toFixed(1)}% (queda de ${quedaPontos.toFixed(1)} p.p.).`,
+        mensagem: `Sua margem bruta caiu de ${fmtPct(margemAnterior)} para ${fmtPct(margemAtual)} (queda de ${fmtPct(Math.round(quedaPontos * 10) / 10)} p.p.).`,
         dadosMinimosPresentes: true,
         indicadorOrigem: 'F-07 Margem Bruta',
         valoresUsados: {
@@ -166,7 +187,7 @@ export function avaliarAlertas(dados: DadosParaAvaliacaoAlertas): AlertaDTO[] {
         id: 'A6',
         nivel: 'ATENCAO',
         titulo: 'Descontos Acima do Limite',
-        mensagem: `Você concedeu R$ ${indicadoresAtuais.descontosConcedidos.valor.valor.toFixed(2)} em descontos (${pctDescontos.toFixed(1)}% do faturamento bruto), superando o teto de ${limiteDescontoDonoPercentual}%.`,
+        mensagem: `Você concedeu ${fmtBRL(indicadoresAtuais.descontosConcedidos.valor.valor)} em descontos (${fmtPct(pctDescontos)} do faturamento bruto), superando o teto de ${fmtPct(limiteDescontoDonoPercentual)}.`,
         dadosMinimosPresentes: true,
         indicadorOrigem: 'F-07 Descontos',
         valoresUsados: {

@@ -1,7 +1,13 @@
 /**
  * ALTHUS by DATALIS — Motor de Indicadores Financeiros e Operacionais (F-07 / Seção 7)
  * Fórmulas matemáticas rigorosas, DRE Gerencial, Ponto de Equilíbrio e Métricas de Estoque.
+ *
+ * Conformidade:
+ * - Regra integridade-e-validacao-de-dados-financeiros:
+ *   Todos os acumuladores monetários usam Decimal.js para evitar acúmulo de erro de ponto flutuante.
  */
+
+import Decimal from 'decimal.js';
 
 import {
   DespesaDTO,
@@ -11,8 +17,11 @@ import {
   ProdutoDTO,
 } from '../types/index.js';
 
-function round2(val: number): number {
-  return Math.round((val + Number.EPSILON) * 100) / 100;
+Decimal.set({ precision: 20, rounding: Decimal.ROUND_HALF_UP });
+
+/** Converte um Decimal para número com 2 casas decimais */
+function round2(val: Decimal | number): number {
+  return new Decimal(val).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toNumber();
 }
 
 export interface DadosCalculoIndicadores {
@@ -43,60 +52,58 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
     (v) => v.status === 'CONFIRMADA' && v.dataHoraVenda >= periodoInicio && v.dataHoraVenda <= periodoFim
   );
 
-  // 1. Faturamento e Vendas
+  // 1. Faturamento e Vendas — acumuladores Decimal para evitar erro de ponto flutuante
   const numeroVendas = vendasConfirmadas.length;
-  let faturamentoTotal = 0;
-  let descontosTotal = 0;
-  let faturamentoBrutoTotal = 0;
-  let cmvTotal = 0;
+  let faturamentoTotalD = new Decimal(0);
+  let descontosTotalD = new Decimal(0);
+  let faturamentoBrutoTotalD = new Decimal(0);
+  let cmvTotalD = new Decimal(0);
   let totalItensVendidosComCusto = 0;
 
   const vendasPorDiaSemana: Record<string, number> = {
-    Dom: 0,
-    Seg: 0,
-    Ter: 0,
-    Qua: 0,
-    Qui: 0,
-    Sex: 0,
-    Sab: 0,
+    Dom: 0, Seg: 0, Ter: 0, Qua: 0, Qui: 0, Sex: 0, Sab: 0,
   };
   const diasChave = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
   const vendasPorHorario: Record<number, number> = {};
-
-  for (let h = 0; h < 24; h++) {
-    vendasPorHorario[h] = 0;
-  }
+  for (let h = 0; h < 24; h++) { vendasPorHorario[h] = 0; }
 
   for (const v of vendasConfirmadas) {
-    faturamentoTotal += v.valorLiquido;
-    descontosTotal += v.valorDesconto;
-    faturamentoBrutoTotal += v.valorBruto;
+    faturamentoTotalD = faturamentoTotalD.plus(v.valorLiquido);
+    descontosTotalD = descontosTotalD.plus(v.valorDesconto);
+    faturamentoBrutoTotalD = faturamentoBrutoTotalD.plus(v.valorBruto);
 
     const dataObj = new Date(v.dataHoraVenda);
     const diaIndex = dataObj.getUTCDay();
-    vendasPorDiaSemana[diasChave[diaIndex]] += v.valorLiquido;
+    vendasPorDiaSemana[diasChave[diaIndex]] = round2(
+      new Decimal(vendasPorDiaSemana[diasChave[diaIndex]]).plus(v.valorLiquido)
+    );
 
     const hora = dataObj.getUTCHours();
-    vendasPorHorario[hora] = (vendasPorHorario[hora] || 0) + v.valorLiquido;
+    vendasPorHorario[hora] = round2(
+      new Decimal(vendasPorHorario[hora] || 0).plus(v.valorLiquido)
+    );
 
     // CMV a partir dos itens gravados
     if (v.itens && v.itens.length > 0) {
       for (const item of v.itens) {
         if (item.custoUnitarioMomento > 0) {
-          cmvTotal += item.quantidade * item.custoUnitarioMomento;
+          cmvTotalD = cmvTotalD.plus(
+            new Decimal(item.quantidade).mul(item.custoUnitarioMomento)
+          );
           totalItensVendidosComCusto += item.quantidade;
         }
       }
     }
   }
 
-  faturamentoTotal = round2(faturamentoTotal);
-  descontosTotal = round2(descontosTotal);
-  cmvTotal = round2(cmvTotal);
+  const faturamentoTotal = round2(faturamentoTotalD);
+  const descontosTotal = round2(descontosTotalD);
+  const faturamentoBrutoTotal = round2(faturamentoBrutoTotalD);
+  const cmvTotal = round2(cmvTotalD);
 
   const ticketMedio: IndicadorValor<number> =
     numeroVendas > 0
-      ? { valor: round2(faturamentoTotal / numeroVendas), disponivel: true }
+      ? { valor: round2(faturamentoTotalD.div(numeroVendas)), disponivel: true }
       : {
           valor: 0,
           disponivel: false,
@@ -112,38 +119,40 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
     valor: {
       valor: descontosTotal,
       percentual:
-        faturamentoBrutoTotal > 0 ? round2((descontosTotal / faturamentoBrutoTotal) * 100) : 0,
+        faturamentoBrutoTotal > 0
+          ? round2(new Decimal(descontosTotal).div(faturamentoBrutoTotal).mul(100))
+          : 0,
     },
     disponivel: true,
   };
 
   // 2. Despesas Operacionais (Fixas e Variáveis) do período
-  let despesasFixasTotal = 0;
-  let despesasVariaveisTotal = 0;
-  let comprasMercadoriaTotal = 0;
+  let despesasFixasTotalD = new Decimal(0);
+  let despesasVariaveisTotalD = new Decimal(0);
+  let comprasMercadoriaTotalD = new Decimal(0);
 
   for (const d of despesas) {
     if (d.dataCompetencia >= periodoInicio && d.dataCompetencia <= periodoFim) {
       if (d.categoria === 'MERCADORIA') {
-        comprasMercadoriaTotal += d.valor;
+        comprasMercadoriaTotalD = comprasMercadoriaTotalD.plus(d.valor);
       } else if (d.categoria === 'RETIRADA_DONO') {
         // Excluída das despesas operacionais da empresa
       } else if (d.tipo === 'FIXA') {
-        despesasFixasTotal += d.valor;
+        despesasFixasTotalD = despesasFixasTotalD.plus(d.valor);
       } else if (d.tipo === 'VARIAVEL') {
-        despesasVariaveisTotal += d.valor;
+        despesasVariaveisTotalD = despesasVariaveisTotalD.plus(d.valor);
       }
     }
   }
 
-  despesasFixasTotal = round2(despesasFixasTotal);
-  despesasVariaveisTotal = round2(despesasVariaveisTotal);
+  const despesasFixasTotal = round2(despesasFixasTotalD);
+  const despesasVariaveisTotal = round2(despesasVariaveisTotalD);
 
   // No degrau 1 (se não houver itens com custo individual gravados nas vendas):
   let cmvFinal = cmvTotal;
   let limiteCmvDeclarado: string | undefined;
-  if (cmvTotal === 0 && comprasMercadoriaTotal > 0) {
-    cmvFinal = round2(comprasMercadoriaTotal);
+  if (cmvTotal === 0 && comprasMercadoriaTotalD.gt(0)) {
+    cmvFinal = round2(comprasMercadoriaTotalD);
     limiteCmvDeclarado =
       'Custo aproximado pelas compras de mercadoria do período (Degrau 1). Se o estoque aumentou, o custo parecerá mais alto que o real.';
   }
@@ -159,7 +168,7 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
   };
 
   // 3. Lucro Bruto e Margem Bruta
-  const lucroBrutoValor = round2(faturamentoTotal - cmvFinal);
+  const lucroBrutoValor = round2(new Decimal(faturamentoTotal).minus(cmvFinal));
   const lucroBrutoIndicador: IndicadorValor<number> = {
     valor: lucroBrutoValor,
     disponivel: faturamentoTotal > 0,
@@ -167,7 +176,9 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
   };
 
   const margemBrutaPct =
-    faturamentoTotal > 0 ? round2((lucroBrutoValor / faturamentoTotal) * 100) : 0;
+    faturamentoTotal > 0
+      ? round2(new Decimal(lucroBrutoValor).div(faturamentoTotal).mul(100))
+      : 0;
   const margemBrutaIndicador: IndicadorValor<number> = {
     valor: margemBrutaPct,
     disponivel: faturamentoTotal > 0,
@@ -175,8 +186,12 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
   };
 
   // 4. Resultado Gerencial e Resultado após Retirada
-  const despesasOperacionaisTotal = round2(despesasFixasTotal + despesasVariaveisTotal);
-  const resultadoGerencialValor = round2(lucroBrutoValor - despesasOperacionaisTotal);
+  const despesasOperacionaisTotal = round2(
+    new Decimal(despesasFixasTotal).plus(despesasVariaveisTotal)
+  );
+  const resultadoGerencialValor = round2(
+    new Decimal(lucroBrutoValor).minus(despesasOperacionaisTotal)
+  );
 
   const resultadoGerencialIndicador: IndicadorValor<number> = {
     valor: resultadoGerencialValor,
@@ -186,7 +201,9 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
   };
 
   const retiradaDonoEfetiva = retiradaMensalDono ?? 0;
-  const resultadoAposRetiradaValor = round2(resultadoGerencialValor - retiradaDonoEfetiva);
+  const resultadoAposRetiradaValor = round2(
+    new Decimal(resultadoGerencialValor).minus(retiradaDonoEfetiva)
+  );
   const resultadoAposRetiradaIndicador: IndicadorValor<number> = {
     valor: resultadoAposRetiradaValor,
     disponivel: retiradaMensalDono !== undefined && retiradaMensalDono > 0,
@@ -198,10 +215,12 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
 
   // 5. Análise Custo-Volume-Lucro (Margem de Contribuição e Ponto de Equilíbrio)
   // Margem de Contribuição = (Faturamento - CMV - Despesas Variáveis) ÷ Faturamento
-  const margemContribuicaoMonetaria = faturamentoTotal - cmvFinal - despesasVariaveisTotal;
-  const margemContribuicaoFracao =
-    faturamentoTotal > 0 ? margemContribuicaoMonetaria / faturamentoTotal : 0;
-  const margemContribuicaoPercentual = round2(margemContribuicaoFracao * 100);
+  const margemContribuicaoMonetaria = new Decimal(faturamentoTotal)
+    .minus(cmvFinal)
+    .minus(despesasVariaveisTotal);
+  const margemContribuicaoFracaoD =
+    faturamentoTotal > 0 ? margemContribuicaoMonetaria.div(faturamentoTotal) : new Decimal(0);
+  const margemContribuicaoPercentual = round2(margemContribuicaoFracaoD.mul(100));
 
   const margemContribuicaoIndicador: IndicadorValor<number> = {
     valor: margemContribuicaoPercentual,
@@ -218,11 +237,11 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
     motivoPontoEquilibrio = 'Faturamento zerado no período selecionado.';
   } else if (despesasFixasTotal <= 0) {
     motivoPontoEquilibrio = 'Nenhuma despesa fixa lançada no período.';
-  } else if (margemContribuicaoFracao <= 0) {
+  } else if (margemContribuicaoFracaoD.lte(0)) {
     motivoPontoEquilibrio =
       'Margem de contribuição nula ou negativa. O faturamento não cobre os custos variáveis e a mercadoria.';
   } else {
-    pontoEquilibrioMensal = round2(despesasFixasTotal / margemContribuicaoFracao);
+    pontoEquilibrioMensal = round2(new Decimal(despesasFixasTotal).div(margemContribuicaoFracaoD));
     pontoEquilibrioDisponivel = true;
   }
 
@@ -234,7 +253,9 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
 
   const diasUteis = diasFuncionamentoMes > 0 ? diasFuncionamentoMes : 26;
   const pontoEquilibrioDiario =
-    pontoEquilibrioDisponivel && diasUteis > 0 ? round2(pontoEquilibrioMensal / diasUteis) : 0;
+    pontoEquilibrioDisponivel && diasUteis > 0
+      ? round2(new Decimal(pontoEquilibrioMensal).div(diasUteis))
+      : 0;
 
   const pontoEquilibrioDiarioIndicador: IndicadorValor<number> = {
     valor: pontoEquilibrioDiario,
@@ -244,7 +265,7 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
 
   const pctPontoEquilibrioAtingido =
     pontoEquilibrioDisponivel && pontoEquilibrioMensal > 0
-      ? round2((faturamentoTotal / pontoEquilibrioMensal) * 100)
+      ? round2(new Decimal(faturamentoTotal).div(pontoEquilibrioMensal).mul(100))
       : 0;
 
   const pctPontoEquilibrioIndicador: IndicadorValor<number> = {
@@ -254,14 +275,13 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
   };
 
   // 6. Fluxo de Caixa Real e Vencimentos da Semana
-  let fluxoEntradas = 0;
+  let fluxoEntradasD = new Decimal(0);
   for (const v of vendasConfirmadas) {
-    // Venda entra no caixa no dia da venda (D-05)
-    fluxoEntradas += v.valorLiquido;
+    fluxoEntradasD = fluxoEntradasD.plus(v.valorLiquido);
   }
 
-  let fluxoSaidas = 0;
-  let vencimentos7Dias = 0;
+  let fluxoSaidasD = new Decimal(0);
+  let vencimentos7DiasD = new Decimal(0);
   const hoje = new Date().toISOString().substring(0, 10);
   const dataLimite7Dias = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     .toISOString()
@@ -270,35 +290,38 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
   for (const d of despesas) {
     if (d.status === 'PAGA' && d.dataPagamento) {
       if (d.dataPagamento >= periodoInicio && d.dataPagamento <= periodoFim) {
-        fluxoSaidas += d.valor;
+        fluxoSaidasD = fluxoSaidasD.plus(d.valor);
       }
     } else if (d.status === 'PENDENTE') {
       if (d.dataVencimento >= hoje && d.dataVencimento <= dataLimite7Dias) {
-        vencimentos7Dias += d.valor;
+        vencimentos7DiasD = vencimentos7DiasD.plus(d.valor);
       }
     }
   }
 
-  fluxoEntradas = round2(fluxoEntradas);
-  fluxoSaidas = round2(fluxoSaidas);
-  vencimentos7Dias = round2(vencimentos7Dias);
-
-  const saldoCaixaAtual = round2(saldoInicialCaixa + fluxoEntradas - fluxoSaidas);
+  const fluxoEntradas = round2(fluxoEntradasD);
+  const fluxoSaidas = round2(fluxoSaidasD);
+  const vencimentos7Dias = round2(vencimentos7DiasD);
+  const saldoCaixaAtual = round2(
+    new Decimal(saldoInicialCaixa).plus(fluxoEntradas).minus(fluxoSaidas)
+  );
 
   // 7. Métricas de Estoque
-  let valorEstoqueCusto = 0;
+  let valorEstoqueCustoD = new Decimal(0);
   let produtosSemCustoCount = 0;
 
   for (const p of produtos) {
     if (p.ativo) {
       if (p.custoUnitario > 0) {
-        valorEstoqueCusto += p.estoqueAtual * p.custoUnitario;
+        valorEstoqueCustoD = valorEstoqueCustoD.plus(
+          new Decimal(p.estoqueAtual).mul(p.custoUnitario)
+        );
       } else {
         produtosSemCustoCount++;
       }
     }
   }
-  valorEstoqueCusto = round2(valorEstoqueCusto);
+  const valorEstoqueCusto = round2(valorEstoqueCustoD);
 
   const valorEstoqueIndicador: IndicadorValor<number> = {
     valor: valorEstoqueCusto,
@@ -311,7 +334,9 @@ export function calcularIndicadores(dados: DadosCalculoIndicadores): RelatorioIn
 
   // Giro de Estoque = CMV do período ÷ Estoque médio a custo
   const giroEstoqueValor =
-    valorEstoqueCusto > 0 && cmvFinal > 0 ? round2(cmvFinal / valorEstoqueCusto) : 0;
+    valorEstoqueCusto > 0 && cmvFinal > 0
+      ? round2(new Decimal(cmvFinal).div(valorEstoqueCusto))
+      : 0;
   const giroEstoqueIndicador: IndicadorValor<number> = {
     valor: giroEstoqueValor,
     disponivel: valorEstoqueCusto > 0 && cmvFinal > 0,
@@ -396,18 +421,22 @@ export function calcularCurvaABC(
   const ordenados = [...itensLucro].filter((i) => i.lucroTotal > 0);
   ordenados.sort((a, b) => b.lucroTotal - a.lucroTotal);
 
-  const lucroTotalGeral = ordenados.reduce((acc, curr) => acc + curr.lucroTotal, 0);
-  if (lucroTotalGeral <= 0) return [];
+  const lucroTotalGeralD = ordenados.reduce(
+    (acc, curr) => acc.plus(curr.lucroTotal),
+    new Decimal(0)
+  );
+  if (lucroTotalGeralD.lte(0)) return [];
 
-  let acumulado = 0;
+  let acumuladoD = new Decimal(0);
   return ordenados.map((item) => {
-    const participacao = (item.lucroTotal / lucroTotalGeral) * 100;
-    acumulado += participacao;
+    const participacaoD = new Decimal(item.lucroTotal).div(lucroTotalGeralD).mul(100);
+    acumuladoD = acumuladoD.plus(participacaoD);
+    const acumulado = round2(acumuladoD);
 
     let classe: 'A' | 'B' | 'C' = 'C';
-    if (acumulado <= 80.001) {
+    if (acumuladoD.lte('80.001')) {
       classe = 'A';
-    } else if (acumulado <= 95.001) {
+    } else if (acumuladoD.lte('95.001')) {
       classe = 'B';
     } else {
       classe = 'C';
@@ -417,8 +446,8 @@ export function calcularCurvaABC(
       produtoId: item.produtoId,
       nome: item.nome,
       lucroTotal: round2(item.lucroTotal),
-      participacaoLucroPct: round2(participacao),
-      acumuladoPct: round2(acumulado),
+      participacaoLucroPct: round2(participacaoD),
+      acumuladoPct: acumulado,
       classe,
     };
   });

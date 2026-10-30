@@ -6,9 +6,16 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "tsx src/tests/suite.ts"
+  },
+  "dependencies": {
+    "decimal.js": "^10.4.3"
   },
   "devDependencies": {
+    "@types/decimal.js": "*",
+    "@types/node": "^20.12.7",
+    "tsx": "^4.7.2",
     "typescript": "^5.4.5"
   }
 }

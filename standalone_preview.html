@@ -10,6 +10,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <!-- Decimal.js — cálculos financeiros sem erro de ponto flutuante (regra integridade-e-validacao) -->
+  <script src="https://unpkg.com/decimal.js@10/decimal.js"></script>
   <!-- React & ReactDOM UMD -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -29,33 +31,66 @@
   <script type="text/babel">
     const { useState, useMemo, useEffect } = React;
 
-    // Motores Matemáticos da Especificação v1.1
+    // ------------------------------------------------------------------
+    // Helpers de Formatação — Regra integridade-e-validacao-de-dados-financeiros
+    // Todos os valores monetários devem usar Intl.NumberFormat pt-BR
+    // ------------------------------------------------------------------
+    const fmtBRL = (v) =>
+      new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
+
+    const fmtPct = (v, casas = 1) =>
+      new Intl.NumberFormat('pt-BR', {
+        minimumFractionDigits: casas,
+        maximumFractionDigits: casas,
+      }).format(v) + '%';
+
+    // Helper Decimal: arredonda para 2 casas com ROUND_HALF_UP
+    const d2 = (val) => new Decimal(val).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toNumber();
+
+    // ------------------------------------------------------------------
+    // Motor de Precificação — usa Decimal.js para evitar erros de ponto flutuante
+    // Regra integridade-e-validacao-de-dados-financeiros
+    // ------------------------------------------------------------------
     function calcularPrecificacao(params) {
       const { custoUnitario, despesasVariaveisPercentual: dv, despesasFixasPercentual: df, margemLucroDesejadaPercentual: ml, arredondamento } = params;
-      const soma = dv + df + ml;
-      if (soma >= 100) throw new Error("A soma dos percentuais atinge ou supera 100%.");
-      const divisor = 1 - (soma / 100);
-      const precoBruto = Math.round((custoUnitario / divisor) * 100) / 100;
-      
+
+      // Validação: custo é campo de custo — deve ser positivo
+      if (custoUnitario <= 0) throw new Error('O custo unitário deve ser maior que zero.');
+
+      const dCusto = new Decimal(custoUnitario);
+      const somaD = new Decimal(dv).plus(df).plus(ml);
+      if (somaD.gte(100)) throw new Error('A soma dos percentuais atinge ou supera 100%.');
+
+      const divisorD = new Decimal(1).minus(somaD.div(100));
+      const precoBruto = d2(dCusto.div(divisorD));
+
       let precoFinal = precoBruto;
       if (arredondamento === 'TERMINADO_90') {
-        const inteiro = Math.floor(precoBruto);
-        const dec = precoBruto - inteiro;
-        precoFinal = dec <= 0.9001 ? inteiro + 0.90 : inteiro + 1.90;
+        const inteiroD = new Decimal(precoBruto).floor();
+        const centavos = new Decimal(precoBruto).minus(inteiroD);
+        precoFinal = centavos.lte('0.90001')
+          ? d2(inteiroD.plus('0.90'))
+          : d2(inteiroD.plus('1.90'));
       } else if (arredondamento === 'PROXIMO_005') {
-        precoFinal = Math.ceil(precoBruto * 20) / 20;
+        precoFinal = new Decimal(new Decimal(precoBruto).div('0.05').ceil()).mul('0.05').toDecimalPlaces(2).toNumber();
       }
 
-      const precoEquilibrio = Math.round((custoUnitario / (1 - (dv + df) / 100)) * 100) / 100;
-      const precoContribuicao = Math.round((custoUnitario / (1 - dv / 100)) * 100) / 100;
-      const descMax = Math.round((1 - precoContribuicao / precoFinal) * 1000) / 10;
+      const divEqD = new Decimal(1).minus(new Decimal(dv).plus(df).div(100));
+      const precoEquilibrio = divEqD.gt(0) ? d2(dCusto.div(divEqD)) : 0;
+
+      const divContribD = new Decimal(1).minus(new Decimal(dv).div(100));
+      const precoContribuicao = divContribD.gt(0) ? d2(dCusto.div(divContribD)) : 0;
+
+      const descMax = precoFinal > 0
+        ? d2(new Decimal(1).minus(new Decimal(precoContribuicao).div(precoFinal)).mul(100))
+        : 0;
 
       return {
         precoSugeridoBruto: precoBruto,
-        precoSugeridoFinal: Math.round(precoFinal * 100) / 100,
+        precoSugeridoFinal: precoFinal,
         precoEquilibrio,
         precoContribuicao,
-        markupDivisor: Math.round(divisor * 1000) / 1000,
+        markupDivisor: divisorD.toDecimalPlaces(4).toNumber(),
         descontoMaximo: descMax
       };
     }
@@ -168,7 +203,7 @@
         if (prod.unidade === 'kg') {
           const pesoStr = prompt(`Venda por Peso (Granel):\nInforme o peso em kg para "${prod.nome}" (ex: 0.350):`, '0.350');
           if (!pesoStr) return;
-          qtd = parseFloat(pesoStr.replace(',', '.')) || 0;
+            qtd = parseFloat(pesoStr.replace(',', '.').replace(/[^0-9.]/g, '')) || 0;
           if (qtd <= 0) { alert('Peso inválido!'); return; }
         }
 
@@ -190,8 +225,12 @@
         });
       };
 
-      const subtotalPdv = carrinho.reduce((a, b) => a + (b.qtd * b.preco), 0);
-      const totalPdv = Math.max(0, subtotalPdv - descontoPdv);
+      // Acumuladores Decimal para somatório do carrinho (regra integridade-e-validacao)
+      const subtotalPdv = carrinho.reduce(
+        (acc, b) => acc.plus(new Decimal(b.qtd).mul(b.preco)),
+        new Decimal(0)
+      ).toDecimalPlaces(2).toNumber();
+      const totalPdv = Math.max(0, new Decimal(subtotalPdv).minus(descontoPdv).toDecimalPlaces(2).toNumber());
 
       const finalizarVenda = () => {
         if (carrinho.length === 0) return alert('Carrinho vazio.');
@@ -376,7 +415,7 @@
                               </span>
                             </div>
                             <div className="mt-2 text-xl font-extrabold text-emerald-800 font-mono">
-                              R$ {p.precoVenda.toFixed(2)}
+                              {fmtBRL(p.precoVenda)}
                               {p.unidade === 'kg' && <span className="text-xs font-normal text-slate-500"> / kg</span>}
                             </div>
                           </div>
@@ -427,10 +466,10 @@
                           <div key={idx} className="p-2 bg-slate-50 rounded-lg text-xs flex justify-between items-center">
                             <div>
                               <div className="font-bold text-slate-800">{item.nome}</div>
-                              <div className="text-slate-500 font-mono">{item.qtd} {item.unidade} × R$ {item.preco.toFixed(2)}</div>
+                              <div className="text-slate-500 font-mono">{item.qtd} {item.unidade} × {fmtBRL(item.preco)}</div>
                             </div>
                             <div className="text-right">
-                              <div className="font-bold font-mono text-slate-900">R$ {(item.qtd * item.preco).toFixed(2)}</div>
+                              <div className="font-bold font-mono text-slate-900">{fmtBRL(new Decimal(item.qtd).mul(item.preco).toDecimalPlaces(2).toNumber())}</div>
                               <button onClick={() => setCarrinho(prev => prev.filter((_, i) => i !== idx))} className="text-red-500 hover:underline text-[10px]">remover</button>
                             </div>
                           </div>
@@ -445,7 +484,12 @@
                       <input
                         type="number"
                         value={descontoPdv}
-                        onChange={e => setDescontoPdv(parseFloat(e.target.value) || 0)}
+                        min="0"
+                        onChange={e => {
+                          // Regra: campo de desconto — rejeita valores negativos
+                          const v = parseFloat(e.target.value) || 0;
+                          setDescontoPdv(v < 0 ? 0 : v);
+                        }}
                         className="w-20 p-1 border rounded text-right font-mono"
                       />
                     </div>
@@ -481,7 +525,7 @@
                     <div className="flex justify-between items-baseline pt-2">
                       <span className="text-xs font-bold text-slate-500 uppercase">Total Final</span>
                       <span className="text-2xl font-black text-emerald-800 font-mono">
-                        R$ {totalPdv.toFixed(2)}
+                        {fmtBRL(totalPdv)}
                       </span>
                     </div>
 
@@ -513,12 +557,12 @@
                     {comprovante.itens.map((it, idx) => (
                       <div key={idx} className="flex justify-between">
                         <span>{it.qtd}x {it.nome}</span>
-                        <span>R$ {(it.qtd * it.preco).toFixed(2)}</span>
+                        <span>{fmtBRL(new Decimal(it.qtd).mul(it.preco).toDecimalPlaces(2).toNumber())}</span>
                       </div>
                     ))}
                     <div className="border-t pt-1 flex justify-between font-bold text-slate-900">
                       <span>TOTAL PAGO ({comprovante.formaPagamento})</span>
-                      <span>R$ {comprovante.valorLiquido.toFixed(2)}</span>
+                      <span>{fmtBRL(comprovante.valorLiquido)}</span>
                     </div>
                   </div>
                   <p className="text-[10px] text-slate-400 text-center">Documento não fiscal para conferência gerencial.</p>
@@ -558,7 +602,7 @@
                   <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
                     <span className="text-xs text-slate-500 font-bold uppercase">Faturamento Mês</span>
                     <div className="text-2xl font-black text-slate-900 mt-1 font-mono">
-                      R$ {vendas.reduce((a, b) => a + b.valorLiquido, 0).toFixed(2)}
+                      {fmtBRL(vendas.reduce((acc, b) => acc.plus(b.valorLiquido), new Decimal(0)).toDecimalPlaces(2).toNumber())}
                     </div>
                     <span className="text-[11px] text-slate-400">{vendas.length} venda(s) registrada(s)</span>
                   </div>
@@ -623,7 +667,7 @@
                                 <div key={idx}>{it.qtd}x {it.nome}</div>
                               ))}
                             </td>
-                            <td className="py-3 px-4 text-right font-mono font-bold">R$ {v.valorLiquido.toFixed(2)}</td>
+                            <td className="py-3 px-4 text-right font-mono font-bold">{fmtBRL(v.valorLiquido)}</td>
                             <td className="py-3 px-4 text-center">
                               <button
                                 onClick={() => {
@@ -662,7 +706,12 @@
                         <input
                           type="number"
                           value={calcParams.custoUnitario}
-                          onChange={e => setCalcParams({ ...calcParams, custoUnitario: parseFloat(e.target.value) || 0 })}
+                          min="0.01"
+                          onChange={e => {
+                            // Regra: custo é campo de receita — rejeita valores negativos
+                            const v = parseFloat(e.target.value) || 0;
+                            setCalcParams({ ...calcParams, custoUnitario: v < 0 ? 0 : v });
+                          }}
                           className="w-full p-2 border rounded-lg font-mono font-bold text-sm"
                         />
                       </div>
@@ -714,26 +763,26 @@
                         <div>
                           <span className="text-[11px] font-bold text-slate-500 uppercase">Preço de Venda Sugerido</span>
                           <div className="text-3xl font-black text-emerald-800 font-mono mt-1">
-                            R$ {resCalc.data.precoSugeridoFinal.toFixed(2)}
+                            {fmtBRL(resCalc.data.precoSugeridoFinal)}
                           </div>
                           <p className="text-[11px] text-slate-500 mt-1">
-                            Preço bruto: R$ {resCalc.data.precoSugeridoBruto.toFixed(2)} (Markup Divisor: {resCalc.data.markupDivisor})
+                            Preço bruto: {fmtBRL(resCalc.data.precoSugeridoBruto)} (Markup Divisor: {resCalc.data.markupDivisor})
                           </p>
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 text-xs">
                           <div className="p-2.5 bg-white rounded-lg border">
                             <span className="text-[10px] text-slate-400 block">Preço Equilíbrio</span>
-                            <span className="font-bold font-mono">R$ {resCalc.data.precoEquilibrio.toFixed(2)}</span>
+                            <span className="font-bold font-mono">{fmtBRL(resCalc.data.precoEquilibrio)}</span>
                           </div>
                           <div className="p-2.5 bg-white rounded-lg border">
                             <span className="text-[10px] text-slate-400 block">Preço Contribuição</span>
-                            <span className="font-bold font-mono">R$ {resCalc.data.precoContribuicao.toFixed(2)}</span>
+                            <span className="font-bold font-mono">{fmtBRL(resCalc.data.precoContribuicao)}</span>
                           </div>
                         </div>
 
                         <div className="p-2.5 bg-emerald-100/60 rounded-lg text-emerald-900 text-xs font-semibold">
-                          Desconto Máximo sem Prejuízo: {resCalc.data.descontoMaximo}%
+                          Desconto Máximo sem Prejuízo: {fmtPct(resCalc.data.descontoMaximo)}
                         </div>
                       </div>
                     )}
@@ -765,7 +814,7 @@
                           <tr key={t.id}>
                             <td className="py-3 px-4 font-bold">{t.cliente}</td>
                             <td className="py-3 px-4 text-slate-500">{t.tel || '—'}</td>
-                            <td className="py-3 px-4 text-right font-mono font-bold text-red-600">R$ {t.saldo.toFixed(2)}</td>
+                            <td className="py-3 px-4 text-right font-mono font-bold text-red-600">{fmtBRL(t.saldo)}</td>
                             <td className="py-3 px-4 text-center">
                               <span className="px-2 py-0.5 rounded font-bold bg-red-100 text-red-800">{t.status}</span>
                             </td>
@@ -831,7 +880,7 @@
                         <td className="py-3 px-4 font-bold">{p.nome}</td>
                         <td className="py-3 px-4 text-slate-500">{p.categoria}</td>
                         <td className="py-3 px-4 font-bold font-mono">{p.estoqueAtual} {p.unidade}</td>
-                        <td className="py-3 px-4 text-right font-mono font-bold">R$ {p.precoVenda.toFixed(2)}</td>
+                        <td className="py-3 px-4 text-right font-mono font-bold">{fmtBRL(p.precoVenda)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -880,7 +929,7 @@
                       <tr key={d.id}>
                         <td className="py-3 px-4 font-bold">{d.desc}</td>
                         <td className="py-3 px-4">{d.tipo}</td>
-                        <td className="py-3 px-4 text-right font-mono font-bold">R$ {d.valor.toFixed(2)}</td>
+                        <td className="py-3 px-4 text-right font-mono font-bold">{fmtBRL(d.valor)}</td>
                       </tr>
                     ))}
                   </tbody>

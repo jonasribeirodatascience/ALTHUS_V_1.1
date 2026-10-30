@@ -1,6 +1,10 @@
 /**
  * ALTHUS by DATALIS — Suíte de Testes Automatizados e Verificação dos Critérios de Aceite
  * Executa conferência matemática contra os exemplos da especificação v1.1.
+ *
+ * Conformidade:
+ * - Regra seguranca-e-privacidade-de-dados-do-usuario:
+ *   console.log e console.error só são chamados fora de ambiente de produção.
  */
 
 import {
@@ -15,20 +19,34 @@ import {
   VendaDTO,
 } from '../index.js';
 
+/** Emite log de teste apenas fora de produção */
+const logTeste = (msg: string) => {
+  if (process.env.NODE_ENV !== 'production') {
+    // eslint-disable-next-line no-console
+    console.log(msg);
+  }
+};
+const logFalha = (msg: string) => {
+  if (process.env.NODE_ENV !== 'production') {
+    // eslint-disable-next-line no-console
+    console.error(msg);
+  }
+};
+
 interface TestResult {
   nome: string;
   sucesso: boolean;
-  esperado?: any;
-  obtido?: any;
+  esperado?: unknown;
+  obtido?: unknown;
   erro?: string;
 }
 
 const resultados: TestResult[] = [];
 
-function assert(nome: string, condicao: boolean, detalhes?: { esperado?: any; obtido?: any }) {
+function assert(nome: string, condicao: boolean, detalhes?: { esperado?: unknown; obtido?: unknown }) {
   if (condicao) {
     resultados.push({ nome, sucesso: true });
-    console.log(`✅ [PASS] ${nome}`);
+    logTeste(`✅ [PASS] ${nome}`);
   } else {
     resultados.push({
       nome,
@@ -36,14 +54,14 @@ function assert(nome: string, condicao: boolean, detalhes?: { esperado?: any; ob
       esperado: detalhes?.esperado,
       obtido: detalhes?.obtido,
     });
-    console.error(`❌ [FAIL] ${nome} - Esperado: ${detalhes?.esperado}, Obtido: ${detalhes?.obtido}`);
+    logFalha(`❌ [FAIL] ${nome} — Esperado: ${detalhes?.esperado}, Obtido: ${detalhes?.obtido}`);
   }
 }
 
 // ============================================================================
 // 1. TESTES DA CALCULADORA DE PRECIFICAÇÃO (F-29 / CA-01 a CA-04)
 // ============================================================================
-console.log('\n--- 1. Testes de Precificação por Markup Divisor (F-29) ---');
+logTeste('\n--- 1. Testes de Precificação por Markup Divisor (F-29) ---');
 
 // Caso Oficial da Seção 5.12 / CA-01:
 // Custo = 60,00, DV = 7%, DF = 20%, ML = 10%
@@ -51,7 +69,7 @@ console.log('\n--- 1. Testes de Precificação por Markup Divisor (F-29) ---');
 // Preço Sugerido Bruto = 95,24
 // Preço Equilíbrio = 82,19
 // Preço Contribuição = 64,52
-// Desconto Máximo Sem Prejuízo = 32,3%
+// Desconto Máximo Sem Prejuízo ≈ 32,3%
 const resOficial = calcularPrecificacao({
   custoUnitario: 60.00,
   despesasVariaveisPercentual: 7.0,
@@ -108,7 +126,7 @@ try {
     despesasFixasPercentual: 30.0,
     margemLucroDesejadaPercentual: 25.0, // Soma = 105%
   });
-} catch (e) {
+} catch {
   rejeitouSomaMaior100 = true;
 }
 
@@ -118,10 +136,29 @@ assert(
   { esperado: true, obtido: rejeitouSomaMaior100 }
 );
 
+// Validação de entrada: custo negativo deve ser rejeitado
+let rejeitouCustoNegativo = false;
+try {
+  calcularPrecificacao({
+    custoUnitario: -10.00,
+    despesasVariaveisPercentual: 7.0,
+    despesasFixasPercentual: 20.0,
+    margemLucroDesejadaPercentual: 10.0,
+  });
+} catch {
+  rejeitouCustoNegativo = true;
+}
+
+assert(
+  'Validação: Custo unitário negativo ou zero deve ser rejeitado',
+  rejeitouCustoNegativo,
+  { esperado: true, obtido: rejeitouCustoNegativo }
+);
+
 // ============================================================================
 // 2. TESTES DE VALIDAÇÃO DE DOCUMENTOS (F-01, F-11)
 // ============================================================================
-console.log('\n--- 2. Testes de CPF e CNPJ (F-01, F-11) ---');
+logTeste('\n--- 2. Testes de CPF e CNPJ (F-01, F-11) ---');
 
 assert('Validação de CPF com dígitos verificadores corretos', isValidCPF('52998224725') === true);
 assert('Rejeição de CPF com dígitos repetidos (111.111.111-11)', isValidCPF('11111111111') === false);
@@ -130,10 +167,15 @@ assert('Rejeição de CPF com dígito verificador adulterado', isValidCPF('52998
 assert('Validação de CNPJ com dígitos verificadores corretos', isValidCNPJ('11222333000181') === true);
 assert('Rejeição de CNPJ com dígito verificador adulterado', isValidCNPJ('11222333000100') === false);
 
+// isValidDocument deve delegar corretamente
+assert('isValidDocument aceita CPF válido', isValidDocument('52998224725') === true);
+assert('isValidDocument aceita CNPJ válido', isValidDocument('11222333000181') === true);
+assert('isValidDocument rejeita string inválida', isValidDocument('000') === false);
+
 // ============================================================================
 // 3. TESTES DE VENDA POR PESO (F-05 / RN-06 a RN-08 / CA-P1 a CA-P3)
 // ============================================================================
-console.log('\n--- 3. Testes de Venda por Peso a Granel (F-05) ---');
+logTeste('\n--- 3. Testes de Venda por Peso a Granel (F-05) ---');
 
 // CA-P1: Preço R$ 40,00 por kg, peso 0,350 kg => Total R$ 14,00
 const precoKg = 40.00;
@@ -159,18 +201,19 @@ assert(
 // ============================================================================
 // 4. TESTES DO DRE GERENCIAL E PONTO DE EQUILÍBRIO (F-07)
 // ============================================================================
-console.log('\n--- 4. Testes de Indicadores Financeiros (F-07) ---');
+logTeste('\n--- 4. Testes de Indicadores Financeiros (F-07) ---');
 
+// Mocks com dados exclusivamente fictícios (regra seguranca-e-privacidade)
 const produtosMock: ProdutoDTO[] = [
   {
-    id: 'p1',
-    empresaId: 'emp-1',
-    nome: 'Item A',
+    id: 'mock-prod-001',
+    empresaId: 'mock-emp-001',
+    nome: 'Produto Fictício Alpha',
     categoria: 'Geral',
     unidade: 'un',
     custoUnitario: 30.00,
     precoVenda: 50.00,
-    estoqueAtual: 5, // Abaixo do mínimo!
+    estoqueAtual: 5, // Abaixo do mínimo — alerta A1
     estoqueMinimo: 10,
     ativo: true,
     possuiVariacoes: false,
@@ -178,13 +221,13 @@ const produtosMock: ProdutoDTO[] = [
     updatedAt: new Date().toISOString(),
   },
   {
-    id: 'p2',
-    empresaId: 'emp-1',
-    nome: 'Item B com Preço Abaixo Custo',
+    id: 'mock-prod-002',
+    empresaId: 'mock-emp-001',
+    nome: 'Produto Fictício Beta (Preço Abaixo Custo)',
     categoria: 'Geral',
     unidade: 'un',
     custoUnitario: 40.00,
-    precoVenda: 35.00, // Preço < Custo! (Alerta A8)
+    precoVenda: 35.00, // Preço < Custo — alerta A8
     estoqueAtual: 20,
     estoqueMinimo: 5,
     ativo: true,
@@ -196,9 +239,9 @@ const produtosMock: ProdutoDTO[] = [
 
 const despesasMock: DespesaDTO[] = [
   {
-    id: 'd1',
-    empresaId: 'emp-1',
-    descricao: 'Aluguel',
+    id: 'mock-desp-001',
+    empresaId: 'mock-emp-001',
+    descricao: 'Aluguel Fictício',
     tipo: 'FIXA',
     categoria: 'ALUGUEL',
     valor: 1000.00,
@@ -211,9 +254,9 @@ const despesasMock: DespesaDTO[] = [
 
 const vendasMock: VendaDTO[] = [
   {
-    id: 'v1',
-    empresaId: 'emp-1',
-    usuarioId: 'u1',
+    id: 'mock-venda-001',
+    empresaId: 'mock-emp-001',
+    usuarioId: 'mock-user-001',
     origem: 'PDV_NATIVO',
     status: 'CONFIRMADA',
     valorBruto: 500.00,
@@ -223,10 +266,10 @@ const vendasMock: VendaDTO[] = [
     dataHoraVenda: '2026-10-15T14:00:00Z',
     itens: [
       {
-        id: 'iv1',
-        vendaId: 'v1',
-        produtoId: 'p1',
-        produtoNome: 'Item A',
+        id: 'mock-item-001',
+        vendaId: 'mock-venda-001',
+        produtoId: 'mock-prod-001',
+        produtoNome: 'Produto Fictício Alpha',
         quantidade: 10,
         precoUnitario: 50.00,
         custoUnitarioMomento: 30.00, // CMV = 300,00
@@ -267,7 +310,7 @@ assert(
 // ============================================================================
 // 5. TESTES DO MOTOR DE ALERTAS POR REGRAS MATEMÁTICAS (F-08)
 // ============================================================================
-console.log('\n--- 5. Testes de Alertas por Regras (F-08) ---');
+logTeste('\n--- 5. Testes de Alertas por Regras (F-08) ---');
 
 const alertasGerados = avaliarAlertas({
   produtos: produtosMock,
@@ -278,19 +321,30 @@ const alertasGerados = avaliarAlertas({
 });
 
 const alertaA1 = alertasGerados.find((a) => a.id === 'A1');
-assert('Alerta A1 (Estoque Mínimo) disparado para Item A (5 un <= 10 mín)', Boolean(alertaA1));
+assert('Alerta A1 (Estoque Mínimo) disparado para Produto Alpha (5 un <= 10 mín)', Boolean(alertaA1));
 
 const alertaA8 = alertasGerados.find((a) => a.id === 'A8');
-assert('Alerta A8 (Preço Abaixo do Custo) disparado para Item B (Preço 35 < Custo 40)', Boolean(alertaA8));
+assert('Alerta A8 (Preço Abaixo do Custo) disparado para Produto Beta (Preço 35 < Custo 40)', Boolean(alertaA8));
 
 const alertaA5 = alertasGerados.find((a) => a.id === 'A5');
 assert(
-  'Alerta A5 (Contas a Vencer Superam Saldo) disparado (Vencimento R$ 1000 > Saldo R$ 700)',
+  'Alerta A5 (Contas a Vencer Superam Saldo) disparado (Vencimento R$ 1.000 > Saldo R$ 700)',
   Boolean(alertaA5)
 );
 
-console.log('\n======================================================');
+// Verificar que mensagens de alerta usam formato pt-BR
+if (alertaA5) {
+  assert(
+    'Mensagem do Alerta A5 usa formato pt-BR (vírgula como decimal)',
+    alertaA5.mensagem.includes('R$') && alertaA5.mensagem.includes(','),
+    { esperado: 'mensagem contendo R$ com vírgula decimal', obtido: alertaA5.mensagem }
+  );
+}
+
+logTeste('\n======================================================');
 const total = resultados.length;
 const sucessos = resultados.filter((r) => r.sucesso).length;
-console.log(`TOTAL DE TESTES: ${total} | APROVADOS: ${sucessos} | FALHAS: ${total - sucessos}`);
-console.log('======================================================\n');
+logTeste(`TOTAL DE TESTES: ${total} | APROVADOS: ${sucessos} | FALHAS: ${total - sucessos}`);
+logTeste('======================================================\n');
+
+export { resultados };

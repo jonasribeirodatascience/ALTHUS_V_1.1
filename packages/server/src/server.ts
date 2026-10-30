@@ -963,7 +963,8 @@ const HOST = process.env.API_HOST || '0.0.0.0';
 
 try {
   await server.listen({ port: PORT, host: HOST });
-  console.log(`[ALTHUS SERVER] Rodando na porta http://localhost:${PORT}`);
+  // Usa o logger estruturado do Fastify em vez de console.log (regra seguranca-e-privacidade)
+  server.log.info({ event: 'server_start', port: PORT }, `ALTHUS SERVER iniciado na porta ${PORT}`);
 } catch (err) {
   server.log.error(err);
   process.exit(1);
